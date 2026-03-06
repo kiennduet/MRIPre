@@ -10,7 +10,7 @@ import numpy as np
 import nibabel as nib
 import torch.nn
 from matplotlib.image import imsave
-from pre_process import preprocess
+from submodules.Wood_2022.pre_process import preprocess
 
 
 def preprocess_BIDS_dataset(input_root_path, output_root_path, skull_strip, use_gpu, BA_submodule_path,
@@ -135,7 +135,7 @@ if __name__ == "__main__":
     # Get absolute path to BrainAge submodule
     # Source: https://stackoverflow.com/questions/3430372/how-do-i-get-the-full-path-of-the-current-files-directory
     script_parent_dir_path = str(pathlib.Path(__file__).parent.resolve())
-    BA_submodule_path = os.path.join(script_parent_dir_path, 'BrainAge_submodule')
+    BA_submodule_path = os.path.join(script_parent_dir_path, 'submodules')
 
     # Preprocess dataset
     preprocessed_output_root_path = os.path.join(dataset_root_path, 'derivatives', preprocessing_name)
