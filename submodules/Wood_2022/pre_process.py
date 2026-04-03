@@ -173,6 +173,7 @@ def apply_noise_reduction(image_array, method='gaussian', params=None):
 
     # Add channel dimension if needed
     if len(image_array.shape) == 3:
+        # transform = AddChannel()
         transform = AddChannel()
         image_array = transform(image_array)
 
@@ -261,7 +262,7 @@ def preprocess(
         orig_nii = nib.load(input_path)
         orig_arr, orig_affine = np.asarray(orig_nii.dataobj), orig_nii.affine
         reoriented_arr, reoriented_affine, *_ = reorder_voxels(orig_arr, orig_affine, 'RAS')
-        reoriented_arr = AddChannel()(reoriented_arr)
+        reoriented_arr = AddChannel()(reoriented_arr) #AddChannel()(reoriented_arr)
         resampled_arr =  Spacing(pixdim=(1.4, 1.4, 1.4), mode='bilinear')(reoriented_arr, reoriented_affine)[0]
 
         pad_size = 130
