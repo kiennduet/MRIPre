@@ -1,2 +1,4 @@
 __pycache__/
 *.pyc
+*.nii.gz
+temp_data/

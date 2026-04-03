@@ -2,6 +2,8 @@ import os
 import subprocess
 import argparse
 from pathlib import Path
+import nibabel as nib
+import numpy as np
 
 def setup_environment(fs_home, fsl_dir, fs_license):
     """Thiết lập biến môi trường cho FreeSurfer và FSL"""
@@ -19,6 +21,28 @@ def run_cmd(cmd):
     if res.returncode != 0:
         return f"ERROR: {res.stderr.strip()}"
     return res.stdout.strip()
+
+def normalize_intensity_01(input_p, output_p):
+    """Chuẩn hóa cường độ ảnh về dải 0-1 sử dụng 99th percentile để tránh outliers"""
+    img = nib.load(input_p)
+    data = img.get_fdata()
+
+    # Loại bỏ giá trị âm (nếu có do nội suy)
+    data = np.maximum(data, 0)
+
+    # Sử dụng phân vị thứ 99 để xác định giá trị tối đa (tránh các điểm nhiễu cực sáng)
+    p99 = np.percentile(data, 99)
+    p0 = np.min(data)
+
+    if p99 - p0 > 0:
+        data = (data - p0) / (p99 - p0)
+    
+    # Cắt các giá trị vượt quá 1 (do ban đầu ta dùng percentile 99)
+    data = np.clip(data, 0, 1)
+
+    # Lưu lại file với kiểu dữ liệu float32 để nhẹ và chuẩn cho Deep Learning
+    new_img = nib.Nifti1Image(data.astype(np.float32), img.affine, img.header)
+    nib.save(new_img, output_p)
 
 def process_file(input_p, output_p, mni_ref, res, dof):
     """Quy trình xử lý lõi nâng cao: Reorient -> RobustFOV -> Conform -> Skull-strip -> Align -> Crop"""
@@ -79,8 +103,14 @@ def process_file(input_p, output_p, mni_ref, res, dof):
         cz = int(max(0, min(grid_lim - dz, mz - dz/2)))
 
         run_cmd(f"fslroi {working_file} {output_p} {cx} {dx} {cy} {dy} {cz} {dz}")
+
+        # BƯỚC 6: CHUẨN HÓA CƯỜNG ĐỘ (MỚI THÊM)
+        if os.path.exists(output_p):
+            print(f"    [+] Normalizing intensity to 0-1...")
+            normalize_intensity_01(output_p, output_p) # Ghi đè lên file output cuối cùng
         
-        return os.path.exists(output_p)
+        return os.path.exists(output_p)        
+
         
     finally:
         # Dọn dẹp TẤT CẢ file tạm
@@ -127,7 +157,7 @@ def main():
         relative_p = t1w_path.relative_to(bids_root)
         
         # Tạo tên file output mới
-        out_name = t1w_path.name.replace("_T1w.nii.gz", f"_T1w_preproc.nii.gz")
+        out_name = t1w_path.name
         
         # Đường dẫn đích = Thư mục đầu ra + cấu hình tương đối
         final_out_path = deriv_root / relative_p.parent / out_name
@@ -139,8 +169,6 @@ def main():
         print(f"[*] Processing: {t1w_path.name}")
         if process_file(str(t1w_path), str(final_out_path), mni_ref, args.res, args.dof):
             print(f"    Saved to -> {final_out_path}")
-        else:
-            print(f"    Failed!")
 
 if __name__ == "__main__":
     main()
