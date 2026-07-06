@@ -44,6 +44,81 @@ def normalize_intensity_01(input_p, output_p):
     new_img = nib.Nifti1Image(data.astype(np.float32), img.affine, img.header)
     nib.save(new_img, output_p)
 
+# def process_file(input_p, output_p, mni_ref, res, dof):
+#     """Quy trình xử lý lõi nâng cao: Reorient -> RobustFOV -> Conform -> Skull-strip -> Align -> Crop"""
+#     out_dir = os.path.dirname(output_p)
+#     os.makedirs(out_dir, exist_ok=True)
+    
+#     # Tạo tên file tạm trong thư mục output
+#     tmp_base = output_p.replace(".nii.gz", "_TMP")
+    
+#     # Danh sách các file trung gian
+#     reoriented = f"{tmp_base}_reorient.nii.gz"
+#     robust_roi = f"{tmp_base}_robust.nii.gz"
+#     std_1mm    = f"{tmp_base}_1.nii.gz"
+#     mask       = f"{tmp_base}_m.nii.gz"
+#     stripped   = f"{tmp_base}_s.nii.gz"
+#     affine     = f"{tmp_base}_a.nii.gz"
+#     resampled  = f"{tmp_base}_r.nii.gz"
+
+#     try:
+#         # BƯỚC 0: Chuẩn hóa hướng và loại bỏ cổ thừa (Sửa lỗi lệch cổ)
+#         # fslreorient2std: Đưa ảnh về hướng chuẩn RAS/FSL
+#         run_cmd(f"fslreorient2std {input_p} {reoriented}")
+        
+#         # robustfov: Tự động nhận diện vùng não và cắt bỏ phần cổ/vai thừa
+#         # Đây là lệnh quan trọng nhất để FLIRT không bị nhầm cổ là não
+#         run_cmd(f"robustfov -i {reoriented} -r {robust_roi}")
+        
+#         # BƯỚC 1: Conform 1mm (Dùng file đã cắt cổ làm đầu vào)
+#         run_cmd(f"mri_convert {robust_roi} {std_1mm} --conform")
+        
+#         # BƯỚC 2: Skull-strip (Tách sọ)
+#         run_cmd(f"mri_watershed {std_1mm} {mask}")
+#         run_cmd(f"mri_mask {std_1mm} {mask} {stripped}")
+        
+#         # BƯỚC 3: Alignment (Đưa về không gian MNI)
+#         # Thêm các tham số search để tìm kiếm kỹ hơn nếu não bị nghiêng
+#         run_cmd(f"flirt -in {stripped} -ref {mni_ref} -out {affine} -dof {dof} "
+#                 f"-searchrx -180 180 -searchry -180 180 -searchrz -180 180")
+
+#         # BƯỚC 4: Resample (Nếu chọn 2mm)
+#         working_file = affine
+#         grid_lim = 256
+#         if res == 2:
+#             run_cmd(f"mri_convert {affine} {resampled} --voxsize 2 2 2")
+#             working_file = resampled
+#             grid_lim = 128
+
+#         # BƯỚC 5: Crop (Cắt theo chuẩn StyleGAN3D)
+#         dx, dy, dz = (160, 192, 224) if res == 1 else (80, 96, 112)
+#         bbox = run_cmd(f"fslstats {working_file} -w")
+#         if "ERROR" in bbox or not bbox: return False
+            
+#         it = bbox.split()
+#         mx, my, mz = int(it[0])+(int(it[1])/2), int(it[2])+(int(it[3])/2), int(it[4])+(int(it[5])/2)
+        
+#         cx = int(max(0, min(grid_lim - dx, mx - dx/2)))
+#         cy = int(max(0, min(grid_lim - dy, my - dy/2)))
+#         cz = int(max(0, min(grid_lim - dz, mz - dz/2)))
+
+#         run_cmd(f"fslroi {working_file} {output_p} {cx} {dx} {cy} {dy} {cz} {dz}")
+
+#         # BƯỚC 6: CHUẨN HÓA CƯỜNG ĐỘ (MỚI THÊM)
+#         if os.path.exists(output_p):
+#             print(f"    [+] Normalizing intensity to 0-1...")
+#             normalize_intensity_01(output_p, output_p) # Ghi đè lên file output cuối cùng
+        
+#         return os.path.exists(output_p)        
+
+        
+#     finally:
+#         # Dọn dẹp TẤT CẢ file tạm
+#         temp_files = [reoriented, robust_roi, std_1mm, mask, stripped, affine, resampled]
+#     #     for f in temp_files:
+#     #         if os.path.exists(f): 
+#     #             os.remove(f)
+
 def process_file(input_p, output_p, mni_ref, res, dof):
     """Quy trình xử lý lõi nâng cao: Reorient -> RobustFOV -> Conform -> Skull-strip -> Align -> Crop"""
     out_dir = os.path.dirname(output_p)
@@ -60,6 +135,7 @@ def process_file(input_p, output_p, mni_ref, res, dof):
     stripped   = f"{tmp_base}_s.nii.gz"
     affine     = f"{tmp_base}_a.nii.gz"
     resampled  = f"{tmp_base}_r.nii.gz"
+    crop       = f"{tmp_base}_crop.nii.gz"
 
     try:
         # BƯỚC 0: Chuẩn hóa hướng và loại bỏ cổ thừa (Sửa lỗi lệch cổ)
@@ -89,7 +165,7 @@ def process_file(input_p, output_p, mni_ref, res, dof):
             run_cmd(f"mri_convert {affine} {resampled} --voxsize 2 2 2")
             working_file = resampled
             grid_lim = 128
-
+        
         # BƯỚC 5: Crop (Cắt theo chuẩn StyleGAN3D)
         dx, dy, dz = (160, 192, 224) if res == 1 else (80, 96, 112)
         bbox = run_cmd(f"fslstats {working_file} -w")
@@ -102,12 +178,11 @@ def process_file(input_p, output_p, mni_ref, res, dof):
         cy = int(max(0, min(grid_lim - dy, my - dy/2)))
         cz = int(max(0, min(grid_lim - dz, mz - dz/2)))
 
-        run_cmd(f"fslroi {working_file} {output_p} {cx} {dx} {cy} {dy} {cz} {dz}")
+        run_cmd(f"fslroi {working_file} {crop} {cx} {dx} {cy} {dy} {cz} {dz}")
 
         # BƯỚC 6: CHUẨN HÓA CƯỜNG ĐỘ (MỚI THÊM)
-        if os.path.exists(output_p):
-            print(f"    [+] Normalizing intensity to 0-1...")
-            normalize_intensity_01(output_p, output_p) # Ghi đè lên file output cuối cùng
+        print(f"    [+] Normalizing intensity to 0-1...")
+        normalize_intensity_01(crop, output_p) # Ghi đè lên file output cuối cùng
         
         return os.path.exists(output_p)        
 
@@ -115,9 +190,9 @@ def process_file(input_p, output_p, mni_ref, res, dof):
     finally:
         # Dọn dẹp TẤT CẢ file tạm
         temp_files = [reoriented, robust_roi, std_1mm, mask, stripped, affine, resampled]
-        for f in temp_files:
-            if os.path.exists(f): 
-                os.remove(f)
+    #     for f in temp_files:
+    #         if os.path.exists(f): 
+    #             os.remove(f)
 
 def main():
     parser = argparse.ArgumentParser(description="BIDS Preprocessing for 3D-StyleGAN (External Output)")
@@ -173,4 +248,4 @@ def main():
 if __name__ == "__main__":
     main()
     
-    # python3 run_prepro_freesurfer.py --bids_dir /home/data/vub_ms/BIDS --out_dir /home/dknguyen/Documents/2_Works/1_FLAIR_MS/data/vub_ms/derivatives --res 1 --dof 6
+    # python3 run_prepro_freesurfer.py --bids_dir /home/data/vub_ms/BIDS --out_dir /home/dknguyen/Documents/2_Works/1_FLAIR_MS/data/vub_ms/derivatives/dof6 --res 1 --dof 6
