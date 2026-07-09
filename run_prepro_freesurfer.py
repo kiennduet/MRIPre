@@ -142,9 +142,10 @@ def main():
     global LOG_PATH
     LOG_PATH = deriv_root / "run_log.txt"
 
-    t1w_list = list(bids_root.glob("sub-*/anat/*_T1w.nii.gz")) + \
-               list(bids_root.glob("sub-*/ses-*/anat/*_T1w.nii.gz")) + \
-               list(bids_root.glob("*_T1w.nii.gz"))
+    t1w_list = sorted(
+                list(bids_root.glob("sub-*/anat/*_T1w.nii.gz")) + \
+                list(bids_root.glob("sub-*/ses-*/anat/*_T1w.nii.gz")) + \
+                list(bids_root.glob("*_T1w.nii.gz")))
 
     settings = f"res={args.res}mm dof={args.dof} bias_correct={args.bias_correct} skip={args.skip}"
     log(f"--- BIDS External Output Pipeline ---\nInput: {bids_root}\nOutput: {deriv_root}\n"
