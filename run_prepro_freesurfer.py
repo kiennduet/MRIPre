@@ -1,12 +1,24 @@
 import os
 import csv
+import glob
+import shutil
 import subprocess
 import argparse
+import datetime
 from pathlib import Path
 import nibabel as nib
 import numpy as np
 
 MNI_REF = "submodules/Wood_2022/Data/MNI152_T1_1mm_brain.nii"
+LOG_PATH = None  # duoc set trong main(), dung chung cho ca file va bash
+
+
+def log(msg):
+    """In ra bash, dong thoi ghi vao file log (neu LOG_PATH da duoc set)"""
+    print(msg)
+    if LOG_PATH:
+        with open(LOG_PATH, "a") as f:
+            f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
 
 
 def run_cmd(cmd, step=""):
@@ -97,13 +109,16 @@ def process_file(input_p, output_p, res, dof, bias_correct=True):
             if os.path.exists(output_p) else None
 
     except Exception as e:
-        print(f"    [x] LỖI xử lý {input_p}: {e}")
+        log(f"    [x] LỖI xử lý {input_p}: {e}")
         return None
 
     finally:
         for f in temp_files:
             if os.path.exists(f):
                 os.remove(f)
+        # Don sot thu muc tmp cua mri_nu_correct.mni neu no bi loi giua chung (ten co PID ngau nhien)
+        for d in glob.glob(os.path.join(os.path.dirname(output_p), "tmp.mri_nu_correct.mni.*")):
+            shutil.rmtree(d, ignore_errors=True)
 
 
 def save_qc_snapshot(nii_path, out_png):
@@ -131,26 +146,31 @@ def main():
     deriv_root = Path(args.out_dir).resolve()
     qc_snap_dir = deriv_root / "qc_snapshots"
     qc_snap_dir.mkdir(parents=True, exist_ok=True)
-    t1w_list = list(bids_root.glob("sub-*/anat/*_T1w.nii.gz")) + \
-               list(bids_root.glob("sub-*/ses-*/anat/*_T1w.nii.gz")) + \
-               list(bids_root.glob("*_T1w.nii.gz"))
+
+    global LOG_PATH
+    LOG_PATH = deriv_root / "run_log.txt"
+
+    t1w_list = sorted(
+                list(bids_root.glob("sub-*/anat/*_T1w.nii.gz")) + \
+                list(bids_root.glob("sub-*/ses-*/anat/*_T1w.nii.gz")) + \
+                list(bids_root.glob("sub-*/ses-*/T1w/*_T1w.nii.gz"))) #prague
 
     settings = f"res={args.res}mm dof={args.dof} bias_correct={args.bias_correct} skip={args.skip}"
-    print(f"--- BIDS External Output Pipeline ---\nInput: {bids_root}\nOutput: {deriv_root}\n"
-          f"Found {len(t1w_list)} files.\nSettings: {settings}\n")
+    log(f"--- BIDS External Output Pipeline ---\nInput: {bids_root}\nOutput: {deriv_root}\n"
+        f"Found {len(t1w_list)} files.\nSettings: {settings}\n")
 
     qc_rows = []  # (subject, volume_mm3, pct_clip1)
     for t1w_path in sorted(t1w_list):
         final_out_path = deriv_root / t1w_path.relative_to(bids_root).parent / t1w_path.name
 
         if args.skip and final_out_path.exists():
-            print(f"[-] Skip: {t1w_path.name}")
+            log(f"[-] Skip: {t1w_path.name}")
             continue
 
-        print(f"[*] Processing: {t1w_path.name}")
+        log(f"[*] Processing: {t1w_path.name}")
         stats = process_file(str(t1w_path), str(final_out_path), args.res, args.dof, args.bias_correct)
         if stats:
-            print(f"    [QC] volume_mm3={stats['volume_mm3']:.1f}  pct_clip1={stats['pct_clip1']:.2f}%")
+            log(f"    [QC] volume_mm3={stats['volume_mm3']:.1f}  pct_clip1={stats['pct_clip1']:.2f}%")
             Path(str(final_out_path).replace(".nii.gz", "_qc.txt")).write_text(
                 f"subject: {t1w_path.name}\n"
                 f"volume_mm3: {stats['volume_mm3']:.1f}\n"
@@ -162,7 +182,7 @@ def main():
                 snap_path = qc_snap_dir / t1w_path.name.replace(".nii.gz", ".png")
                 save_qc_snapshot(str(final_out_path), str(snap_path))
             except Exception as e:
-                print(f"    [!] Khong xuat duoc QC snapshot: {e}")
+                log(f"    [!] Khong xuat duoc QC snapshot: {e}")
         else:
             qc_rows.append((t1w_path.name, float("nan"), float("nan"), False))
 
@@ -179,7 +199,7 @@ def main():
         writer.writerow([f"# settings: {settings}"])
         writer.writerow(["subject", "volume_mm3", "pct_clip1", "bbox_warning"])
         writer.writerows(qc_rows)
-    print(f"\nQC stats saved to -> {qc_path}")
+    log(f"\nQC stats saved to -> {qc_path}")
 
 
 if __name__ == "__main__":
