@@ -6,6 +6,8 @@ import subprocess
 import argparse
 import datetime
 from pathlib import Path
+from itertools import repeat
+from concurrent.futures import ProcessPoolExecutor
 import nibabel as nib
 import numpy as np
 
@@ -132,6 +134,38 @@ def save_qc_snapshot(nii_path, out_png):
             os.remove(f)
 
 
+def _process_one(t1w_path, bids_root, deriv_root, qc_snap_dir, res, dof, bias_correct, skip, log_path):
+    """Xu ly 1 subject: chay trong tien trinh con (ProcessPoolExecutor) hoac tuan tu.
+    Nhan ca context (bids_root, deriv_root, log_path...) qua tham so thay vi doc global,
+    vi tien trinh con khong dam bao ke thua state cua tien trinh cha (spawn vs fork)."""
+    global LOG_PATH
+    LOG_PATH = log_path
+
+    final_out_path = deriv_root / t1w_path.relative_to(bids_root).parent / t1w_path.name
+
+    if skip and final_out_path.exists():
+        log(f"[-] Skip: {t1w_path.name}")
+        return None
+
+    log(f"[*] Processing: {t1w_path.name}")
+    stats = process_file(str(t1w_path), str(final_out_path), res, dof, bias_correct)
+    if stats:
+        log(f"    [QC] volume_mm3={stats['volume_mm3']:.1f}  pct_clip1={stats['pct_clip1']:.2f}%")
+        Path(str(final_out_path).replace(".nii.gz", "_qc.txt")).write_text(
+            f"subject: {t1w_path.name}\n"
+            f"volume_mm3: {stats['volume_mm3']:.1f}\n"
+            f"pct_clip1: {stats['pct_clip1']:.2f}\n"
+        )
+        try:
+            snap_path = qc_snap_dir / t1w_path.name.replace(".nii.gz", ".png")
+            save_qc_snapshot(str(final_out_path), str(snap_path))
+        except Exception as e:
+            log(f"    [!] Khong xuat duoc QC snapshot: {e}")
+        return (t1w_path.name, stats["volume_mm3"], stats["pct_clip1"], stats["bbox_warning"])
+    else:
+        return (t1w_path.name, float("nan"), float("nan"), False)
+
+
 def main():
     parser = argparse.ArgumentParser(description="BIDS Preprocessing for 3D-StyleGAN (External Output)")
     parser.add_argument("--bids_dir", required=True, help="Thư mục gốc BIDS (Read-only)")
@@ -140,6 +174,9 @@ def main():
     parser.add_argument("--dof", type=int, choices=[6, 12], default=6, help="DOF cho Alignment")
     parser.add_argument("--skip", action="store_true", help="Bỏ qua nếu file đã tồn tại")
     parser.add_argument("--bias_correct", action="store_true", help="Bật bias field correction (N3)")
+    parser.add_argument("--workers", type=int, default=1,
+                         help="So subject chay song song (moi worker da tu dung nhieu thread FSL/FreeSurfer noi bo, "
+                              "KHONG nen dat bang so core vat ly; thu 4-6 truoc roi tang dan)")
     args = parser.parse_args()
 
     bids_root = Path(args.bids_dir).resolve()
@@ -159,32 +196,47 @@ def main():
     log(f"--- BIDS External Output Pipeline ---\nInput: {bids_root}\nOutput: {deriv_root}\n"
         f"Found {len(t1w_list)} files.\nSettings: {settings}\n")
 
-    qc_rows = []  # (subject, volume_mm3, pct_clip1)
-    for t1w_path in sorted(t1w_list):
-        final_out_path = deriv_root / t1w_path.relative_to(bids_root).parent / t1w_path.name
+    qc_rows = []  # (subject, volume_mm3, pct_clip1, bbox_warning)
 
-        if args.skip and final_out_path.exists():
-            log(f"[-] Skip: {t1w_path.name}")
-            continue
+    # --- Code cu (chay tuan tu, giu lai de tham khao / rollback neu can) ---
+    # for t1w_path in sorted(t1w_list):
+    #     final_out_path = deriv_root / t1w_path.relative_to(bids_root).parent / t1w_path.name
+    #
+    #     if args.skip and final_out_path.exists():
+    #         log(f"[-] Skip: {t1w_path.name}")
+    #         continue
+    #
+    #     log(f"[*] Processing: {t1w_path.name}")
+    #     stats = process_file(str(t1w_path), str(final_out_path), args.res, args.dof, args.bias_correct)
+    #     if stats:
+    #         log(f"    [QC] volume_mm3={stats['volume_mm3']:.1f}  pct_clip1={stats['pct_clip1']:.2f}%")
+    #         Path(str(final_out_path).replace(".nii.gz", "_qc.txt")).write_text(
+    #             f"subject: {t1w_path.name}\n"
+    #             f"volume_mm3: {stats['volume_mm3']:.1f}\n"
+    #             f"pct_clip1: {stats['pct_clip1']:.2f}\n"
+    #         )
+    #         qc_rows.append((t1w_path.name, stats["volume_mm3"], stats["pct_clip1"], stats["bbox_warning"]))
+    #
+    #         try:
+    #             snap_path = qc_snap_dir / t1w_path.name.replace(".nii.gz", ".png")
+    #             save_qc_snapshot(str(final_out_path), str(snap_path))
+    #         except Exception as e:
+    #             log(f"    [!] Khong xuat duoc QC snapshot: {e}")
+    #     else:
+    #         qc_rows.append((t1w_path.name, float("nan"), float("nan"), False))
 
-        log(f"[*] Processing: {t1w_path.name}")
-        stats = process_file(str(t1w_path), str(final_out_path), args.res, args.dof, args.bias_correct)
-        if stats:
-            log(f"    [QC] volume_mm3={stats['volume_mm3']:.1f}  pct_clip1={stats['pct_clip1']:.2f}%")
-            Path(str(final_out_path).replace(".nii.gz", "_qc.txt")).write_text(
-                f"subject: {t1w_path.name}\n"
-                f"volume_mm3: {stats['volume_mm3']:.1f}\n"
-                f"pct_clip1: {stats['pct_clip1']:.2f}\n"
-            )
-            qc_rows.append((t1w_path.name, stats["volume_mm3"], stats["pct_clip1"], stats["bbox_warning"]))
+    worker_args = (bids_root, deriv_root, qc_snap_dir, args.res, args.dof, args.bias_correct, args.skip, LOG_PATH)
 
-            try:
-                snap_path = qc_snap_dir / t1w_path.name.replace(".nii.gz", ".png")
-                save_qc_snapshot(str(final_out_path), str(snap_path))
-            except Exception as e:
-                log(f"    [!] Khong xuat duoc QC snapshot: {e}")
-        else:
-            qc_rows.append((t1w_path.name, float("nan"), float("nan"), False))
+    if args.workers > 1:
+        with ProcessPoolExecutor(max_workers=args.workers) as ex:
+            for row in ex.map(_process_one, t1w_list, *(repeat(a) for a in worker_args)):
+                if row is not None:
+                    qc_rows.append(row)
+    else:
+        for t1w_path in t1w_list:
+            row = _process_one(t1w_path, *worker_args)
+            if row is not None:
+                qc_rows.append(row)
 
     # File tổng toàn bộ dataset (.csv): settings dùng cho cả run + bảng thống kê QC
     print("\n--- QC STATS (toàn bộ dataset) ---")
