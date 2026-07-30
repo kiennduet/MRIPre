@@ -56,9 +56,15 @@ def process_file(input_p, output_p, res, dof, bias_correct=True):
             skull_input = biascorr
 
         # Skull-strip
-        run_cmd(f"mri_watershed {skull_input} {mask}", "watershed")
-        run_cmd(f"mri_mask {skull_input} {mask} {stripped}", "mri_mask")
+        # run_cmd(f"mri_watershed {skull_input} {mask}", "watershed")
+        # run_cmd(f"mri_mask {skull_input} {mask} {stripped}", "mri_mask")
+        # brain_vol_mm3 = float(run_cmd(f"fslstats {stripped} -V", "qc_volume").split()[1])
+
+        # Skull-strip bang SynthStrip
+        strip_border = 3
+        run_cmd(f"mri_synthstrip -i {skull_input} -o {stripped} -b {strip_border}", "synthstrip")
         brain_vol_mm3 = float(run_cmd(f"fslstats {stripped} -V", "qc_volume").split()[1])
+
 
         # Alignment về không gian MNI
         run_cmd(f"flirt -in {stripped} -ref {MNI_REF} -out {affine} -dof {dof} "
@@ -75,7 +81,8 @@ def process_file(input_p, output_p, res, dof, bias_correct=True):
         bbox = run_cmd(f"fslstats {working_file} -w", "fslstats_bbox").split()
         mx, my, mz = int(bbox[0]) + int(bbox[1]) / 2, int(bbox[2]) + int(bbox[3]) / 2, int(bbox[4]) + int(bbox[5]) / 2
         xsize, ysize, zsize = int(bbox[1]), int(bbox[3]), int(bbox[5])
-        if xsize > dx or ysize > dy or zsize > dz:
+        bbox_warning = xsize > dx or ysize > dy or zsize > dz
+        if bbox_warning:
             print(f"    [!] CẢNH BÁO: bbox não ({xsize},{ysize},{zsize}) vượt kích thước crop "
                   f"({dx},{dy},{dz}) - có thể bị cắt mất mô não")
 
@@ -86,7 +93,8 @@ def process_file(input_p, output_p, res, dof, bias_correct=True):
 
         # Chuẩn hóa cường độ về [0,1]
         pct_clip1 = normalize_intensity_01(crop, output_p)
-        return {"volume_mm3": brain_vol_mm3, "pct_clip1": pct_clip1} if os.path.exists(output_p) else None
+        return {"volume_mm3": brain_vol_mm3, "pct_clip1": pct_clip1, "bbox_warning": bbox_warning} \
+            if os.path.exists(output_p) else None
 
     except Exception as e:
         print(f"    [x] LỖI xử lý {input_p}: {e}")
@@ -132,7 +140,7 @@ def main():
           f"Found {len(t1w_list)} files.\nSettings: {settings}\n")
 
     qc_rows = []  # (subject, volume_mm3, pct_clip1)
-    for t1w_path in t1w_list:
+    for t1w_path in sorted(t1w_list):
         final_out_path = deriv_root / t1w_path.relative_to(bids_root).parent / t1w_path.name
 
         if args.skip and final_out_path.exists():
@@ -148,7 +156,7 @@ def main():
                 f"volume_mm3: {stats['volume_mm3']:.1f}\n"
                 f"pct_clip1: {stats['pct_clip1']:.2f}\n"
             )
-            qc_rows.append((t1w_path.name, stats["volume_mm3"], stats["pct_clip1"]))
+            qc_rows.append((t1w_path.name, stats["volume_mm3"], stats["pct_clip1"], stats["bbox_warning"]))
 
             try:
                 snap_path = qc_snap_dir / t1w_path.name.replace(".nii.gz", ".png")
@@ -156,20 +164,20 @@ def main():
             except Exception as e:
                 print(f"    [!] Khong xuat duoc QC snapshot: {e}")
         else:
-            qc_rows.append((t1w_path.name, float("nan"), float("nan")))
+            qc_rows.append((t1w_path.name, float("nan"), float("nan"), False))
 
     # File tổng toàn bộ dataset (.csv): settings dùng cho cả run + bảng thống kê QC
     print("\n--- QC STATS (toàn bộ dataset) ---")
     print(f"# settings: {settings}")
-    print(f"{'subject':<40}{'volume_mm3':>15}{'pct_clip1':>12}")
-    for s, v, p in qc_rows:
-        print(f"{s:<40}{v:>15.1f}{p:>12.2f}")
+    print(f"{'subject':<40}{'volume_mm3':>15}{'pct_clip1':>12}{'bbox_warning':>15}")
+    for s, v, p, w in qc_rows:
+        print(f"{s:<40}{v:>15.1f}{p:>12.2f}{str(w):>15}")
 
     qc_path = deriv_root / "qc_stats.csv"
     with open(qc_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([f"# settings: {settings}"])
-        writer.writerow(["subject", "volume_mm3", "pct_clip1"])
+        writer.writerow(["subject", "volume_mm3", "pct_clip1", "bbox_warning"])
         writer.writerows(qc_rows)
     print(f"\nQC stats saved to -> {qc_path}")
 
