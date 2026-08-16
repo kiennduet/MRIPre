@@ -135,6 +135,11 @@ def save_qc_snapshot(nii_path, out_png):
             os.remove(f)
 
 
+def _final_out_path(t1w_path, bids_root, deriv_root):
+    """Duong dan output cuoi cung cua 1 subject (giu nguyen cau truc thu muc BIDS)"""
+    return deriv_root / t1w_path.relative_to(bids_root).parent / t1w_path.name
+
+
 def _process_one(t1w_path, bids_root, deriv_root, qc_snap_dir, res, dof, bias_correct, skip, log_path):
     """Xu ly 1 subject: chay trong tien trinh con (ProcessPoolExecutor) hoac tuan tu.
     Nhan ca context (bids_root, deriv_root, log_path...) qua tham so thay vi doc global,
@@ -142,7 +147,7 @@ def _process_one(t1w_path, bids_root, deriv_root, qc_snap_dir, res, dof, bias_co
     global LOG_PATH
     LOG_PATH = log_path
 
-    final_out_path = deriv_root / t1w_path.relative_to(bids_root).parent / t1w_path.name
+    final_out_path = _final_out_path(t1w_path, bids_root, deriv_root)
 
     if skip and final_out_path.exists():
         log(f"[-] Skip: {t1w_path.name}")
@@ -176,10 +181,16 @@ def main():
     parser.add_argument("--dof", type=int, choices=[6, 12], default=6, help="DOF cho Alignment")
     parser.add_argument("--skip", action="store_true", help="Bỏ qua nếu file đã tồn tại")
     parser.add_argument("--bias_correct", action="store_true", help="Bật bias field correction (N3)")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="Chỉ xử lý N subject đầu tiên trong danh sách đã sort (mặc định: tất cả). "
+                             "Dùng để chạy thử trước khi chạy full. Nếu kèm --skip thì là N subject CHƯA có output, "
+                             "nên chạy lặp lại sẽ xử lý tiếp phần còn lại theo từng đợt N")
     parser.add_argument("--workers", type=int, default=1,
                          help="So subject chay song song (moi worker da tu dung nhieu thread FSL/FreeSurfer noi bo, "
                               "KHONG nen dat bang so core vat ly; thu 4-6 truoc roi tang dan)")
     args = parser.parse_args()
+    if args.limit is not None and args.limit < 1:
+        parser.error("--limit phai >= 1")
 
     bids_root = Path(args.bids_dir).resolve()
     deriv_root = Path(args.out_dir).resolve()
@@ -194,9 +205,24 @@ def main():
                 list(bids_root.glob("sub-*/ses-*/anat/*_T1w.nii.gz")) + \
                 list(bids_root.glob("sub-*/ses-*/T1w/*_T1w.nii.gz"))) #prague
 
-    settings = f"res={args.res}mm dof={args.dof} bias_correct={args.bias_correct} skip={args.skip}"
+    # Loc truoc cac subject da co output roi moi cat --limit, de --limit luon dem "so subject se thuc su xu ly".
+    # Neu cat --limit truoc, chay lai lan 2 voi --skip se lay dung N file cu (da xong) va khong xu ly them gi.
+    total_found = len(t1w_list)
+    if args.skip:
+        t1w_list = [p for p in t1w_list if not _final_out_path(p, bids_root, deriv_root).exists()]
+    n_todo = len(t1w_list)
+    if args.limit is not None:
+        t1w_list = t1w_list[:args.limit]
+
+    settings = (f"res={args.res}mm dof={args.dof} bias_correct={args.bias_correct} "
+                f"skip={args.skip} limit={args.limit}")
     log(f"--- BIDS External Output Pipeline ---\nInput: {bids_root}\nOutput: {deriv_root}\n"
-        f"Found {len(t1w_list)} files.\nSettings: {settings}\n")
+        f"Found {total_found} files.")
+    if args.skip:
+        log(f"Da co output, bo qua: {total_found - n_todo} | Con lai: {n_todo}")
+    if args.limit is not None and args.limit < n_todo:
+        log(f"--limit {args.limit}: chi xu ly {len(t1w_list)}/{n_todo} subject dau tien")
+    log(f"Se xu ly: {len(t1w_list)} subject.\nSettings: {settings}\n")
 
     qc_rows = []  # (subject, volume_mm3, pct_clip1, bbox_warning) - chi giu de in bang tong ket cuoi run
     worker_args = (bids_root, deriv_root, qc_snap_dir, args.res, args.dof, args.bias_correct, args.skip, LOG_PATH)
