@@ -66,15 +66,16 @@ def process_file(input_p, output_p, res, dof, bias_correct=True):
         # Bias field correction (N3) - tùy chọn, giúp watershed/flirt chính xác hơn
         skull_input = std_1mm
         if bias_correct:
-            run_cmd(f"mri_nu_correct.mni --i {std_1mm} --o {biascorr} --n 3", "bias_correct")
+            # run_cmd(f"mri_nu_correct.mni --i {std_1mm} --o {biascorr} --n 3", "bias_correct")
+            run_cmd(f"mri_nu_correct.mni --i {std_1mm} --o {biascorr} --ants-n4", "bias_correct")
             skull_input = biascorr
 
-        # Skull-strip
+        ## Skull-strip
         # run_cmd(f"mri_watershed {skull_input} {mask}", "watershed")
         # run_cmd(f"mri_mask {skull_input} {mask} {stripped}", "mri_mask")
         # brain_vol_mm3 = float(run_cmd(f"fslstats {stripped} -V", "qc_volume").split()[1])
 
-        # Skull-strip bang SynthStrip
+        # # Skull-strip bang SynthStrip
         strip_border = 3
         run_cmd(f"mri_synthstrip -i {skull_input} -o {stripped} -b {strip_border}", "synthstrip")
         brain_vol_mm3 = float(run_cmd(f"fslstats {stripped} -V", "qc_volume").split()[1])
@@ -155,6 +156,7 @@ def _process_one(t1w_path, bids_root, deriv_root, qc_snap_dir, res, dof, bias_co
             f"subject: {t1w_path.name}\n"
             f"volume_mm3: {stats['volume_mm3']:.1f}\n"
             f"pct_clip1: {stats['pct_clip1']:.2f}\n"
+            f"bbox_warning: {stats['bbox_warning']}\n"
         )
         try:
             snap_path = qc_snap_dir / t1w_path.name.replace(".nii.gz", ".png")
@@ -196,61 +198,45 @@ def main():
     log(f"--- BIDS External Output Pipeline ---\nInput: {bids_root}\nOutput: {deriv_root}\n"
         f"Found {len(t1w_list)} files.\nSettings: {settings}\n")
 
-    qc_rows = []  # (subject, volume_mm3, pct_clip1, bbox_warning)
-
-    # --- Code cu (chay tuan tu, giu lai de tham khao / rollback neu can) ---
-    # for t1w_path in sorted(t1w_list):
-    #     final_out_path = deriv_root / t1w_path.relative_to(bids_root).parent / t1w_path.name
-    #
-    #     if args.skip and final_out_path.exists():
-    #         log(f"[-] Skip: {t1w_path.name}")
-    #         continue
-    #
-    #     log(f"[*] Processing: {t1w_path.name}")
-    #     stats = process_file(str(t1w_path), str(final_out_path), args.res, args.dof, args.bias_correct)
-    #     if stats:
-    #         log(f"    [QC] volume_mm3={stats['volume_mm3']:.1f}  pct_clip1={stats['pct_clip1']:.2f}%")
-    #         Path(str(final_out_path).replace(".nii.gz", "_qc.txt")).write_text(
-    #             f"subject: {t1w_path.name}\n"
-    #             f"volume_mm3: {stats['volume_mm3']:.1f}\n"
-    #             f"pct_clip1: {stats['pct_clip1']:.2f}\n"
-    #         )
-    #         qc_rows.append((t1w_path.name, stats["volume_mm3"], stats["pct_clip1"], stats["bbox_warning"]))
-    #
-    #         try:
-    #             snap_path = qc_snap_dir / t1w_path.name.replace(".nii.gz", ".png")
-    #             save_qc_snapshot(str(final_out_path), str(snap_path))
-    #         except Exception as e:
-    #             log(f"    [!] Khong xuat duoc QC snapshot: {e}")
-    #     else:
-    #         qc_rows.append((t1w_path.name, float("nan"), float("nan"), False))
-
+    qc_rows = []  # (subject, volume_mm3, pct_clip1, bbox_warning) - chi giu de in bang tong ket cuoi run
     worker_args = (bids_root, deriv_root, qc_snap_dir, args.res, args.dof, args.bias_correct, args.skip, LOG_PATH)
 
-    if args.workers > 1:
-        with ProcessPoolExecutor(max_workers=args.workers) as ex:
-            for row in ex.map(_process_one, t1w_list, *(repeat(a) for a in worker_args)):
-                if row is not None:
-                    qc_rows.append(row)
-    else:
-        for t1w_path in t1w_list:
-            row = _process_one(t1w_path, *worker_args)
-            if row is not None:
-                qc_rows.append(row)
+    # Ghi CSV ngay sau tung subject thay vi doi den cuoi: run bi ngat giua chung van giu nguyen ket qua da chay.
+    # Mo che do append de lan chay tiep theo (--skip) khong ghi de mat cac dong cua lan truoc;
+    # dong "# settings" duoc chen dau moi run de biet cac dong ben duoi sinh ra voi tham so nao.
+    qc_path = deriv_root / "qc_stats.csv"
+    is_new_file = not qc_path.exists() or qc_path.stat().st_size == 0
 
-    # File tổng toàn bộ dataset (.csv): settings dùng cho cả run + bảng thống kê QC
-    print("\n--- QC STATS (toàn bộ dataset) ---")
+    with open(qc_path, "a", newline="") as f:
+        writer = csv.writer(f)
+        if is_new_file:
+            writer.writerow(["subject", "volume_mm3", "pct_clip1", "bbox_warning"])
+        writer.writerow([f"# settings: {settings}"])
+        f.flush()
+
+        def record(row):
+            qc_rows.append(row)
+            writer.writerow(row)
+            f.flush()  # day khoi buffer cua Python ngay, de bi kill giua chung khong mat dong da xu ly
+
+        if args.workers > 1:
+            with ProcessPoolExecutor(max_workers=args.workers) as ex:
+                for row in ex.map(_process_one, t1w_list, *(repeat(a) for a in worker_args)):
+                    if row is not None:
+                        record(row)
+        else:
+            for t1w_path in t1w_list:
+                row = _process_one(t1w_path, *worker_args)
+                if row is not None:
+                    record(row)
+
+    # Bang tong ket cuoi run: chi gom cac subject da xu ly trong LAN CHAY NAY (bo qua cac dong cu trong CSV)
+    print(f"\n--- QC STATS (lan chay nay: {len(qc_rows)} subject) ---")
     print(f"# settings: {settings}")
     print(f"{'subject':<40}{'volume_mm3':>15}{'pct_clip1':>12}{'bbox_warning':>15}")
     for s, v, p, w in qc_rows:
         print(f"{s:<40}{v:>15.1f}{p:>12.2f}{str(w):>15}")
 
-    qc_path = deriv_root / "qc_stats.csv"
-    with open(qc_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([f"# settings: {settings}"])
-        writer.writerow(["subject", "volume_mm3", "pct_clip1", "bbox_warning"])
-        writer.writerows(qc_rows)
     log(f"\nQC stats saved to -> {qc_path}")
 
 
