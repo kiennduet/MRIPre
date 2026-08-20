@@ -7,7 +7,9 @@ def parse_qc_txt(qc_path):
     info = dict(line.split(":", 1) for line in qc_path.read_text().splitlines() if ":" in line)
     info = {k.strip(): v.strip() for k, v in info.items()}
     try:
-        return info["subject"], float(info["volume_mm3"]), float(info["pct_clip1"])
+        # bbox_warning duoc them sau, cac file qc.txt cu khong co -> de trong thay vi doan la False
+        return (info["subject"], float(info["volume_mm3"]), float(info["pct_clip1"]),
+                info.get("bbox_warning", ""))
     except (KeyError, ValueError):
         return None
 
@@ -20,14 +22,14 @@ def main():
     deriv_root = Path(args.out_dir).resolve()
     qc_rows = sorted(filter(None, (parse_qc_txt(p) for p in deriv_root.glob("**/*_qc.txt"))))
 
-    print(f"{'subject':<40}{'volume_mm3':>15}{'pct_clip1':>12}")
-    for s, v, p in qc_rows:
-        print(f"{s:<40}{v:>15.1f}{p:>12.2f}")
+    print(f"{'subject':<40}{'volume_mm3':>15}{'pct_clip1':>12}{'bbox_warning':>15}")
+    for s, v, p, w in qc_rows:
+        print(f"{s:<40}{v:>15.1f}{p:>12.2f}{w:>15}")
 
     qc_path_out = deriv_root / "qc_stats_recovered.csv"
     with open(qc_path_out, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["subject", "volume_mm3", "pct_clip1"])
+        writer.writerow(["subject", "volume_mm3", "pct_clip1", "bbox_warning"])
         writer.writerows(qc_rows)
     print(f"\nDa luu -> {qc_path_out}")
 

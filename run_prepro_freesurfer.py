@@ -185,9 +185,7 @@ def main():
                         help="Chỉ xử lý N subject đầu tiên trong danh sách đã sort (mặc định: tất cả). "
                              "Dùng để chạy thử trước khi chạy full. Nếu kèm --skip thì là N subject CHƯA có output, "
                              "nên chạy lặp lại sẽ xử lý tiếp phần còn lại theo từng đợt N")
-    parser.add_argument("--workers", type=int, default=1,
-                         help="So subject chay song song (moi worker da tu dung nhieu thread FSL/FreeSurfer noi bo, "
-                              "KHONG nen dat bang so core vat ly; thu 4-6 truoc roi tang dan)")
+    parser.add_argument("--workers", type=int, default=1, help="So subject chay song song")
     args = parser.parse_args()
     if args.limit is not None and args.limit < 1:
         parser.error("--limit phai >= 1")
@@ -227,9 +225,6 @@ def main():
     qc_rows = []  # (subject, volume_mm3, pct_clip1, bbox_warning) - chi giu de in bang tong ket cuoi run
     worker_args = (bids_root, deriv_root, qc_snap_dir, args.res, args.dof, args.bias_correct, args.skip, LOG_PATH)
 
-    # Ghi CSV ngay sau tung subject thay vi doi den cuoi: run bi ngat giua chung van giu nguyen ket qua da chay.
-    # Mo che do append de lan chay tiep theo (--skip) khong ghi de mat cac dong cua lan truoc;
-    # dong "# settings" duoc chen dau moi run de biet cac dong ben duoi sinh ra voi tham so nao.
     qc_path = deriv_root / "qc_stats.csv"
     is_new_file = not qc_path.exists() or qc_path.stat().st_size == 0
 
@@ -269,7 +264,8 @@ def main():
 if __name__ == "__main__":
     main()
 
-    # python3 run_prepro_freesurfer.py --bids_dir /home/data/vub_ms/BIDS --out_dir /home/dknguyen/Documents/2_Works/1_FLAIR_MS/data/vub_ms/derivatives/dof6 --res 1 --dof 6
+    # python3 run_prepro_freesurfer.py --bids_dir /home/data/vub_ms/BIDS \
+    # --out_dir /home/dknguyen/Documents/2_Works/1_FLAIR_MS/data/vub_ms/derivatives/dof6 --res 1 --dof 6 bias_correct
 
 # export FREESURFER_HOME=$HOME/software/freesurfer
 # source $FREESURFER_HOME/SetUpFreeSurfer.sh
